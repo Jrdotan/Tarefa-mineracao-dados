@@ -67,10 +67,14 @@ Criação da base final
         ↓
 Exportação para CSV e visualização gráfica
 
+```
+```
 ## Como executar
 Instale as dependências:
 
-```bash
+bash
 pip install -r requirements.txt
 
 python project.py
+```
+
