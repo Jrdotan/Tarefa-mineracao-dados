@@ -26,6 +26,8 @@ A base construída reúne informações relevantes sobre as obras listadas no ra
 - Matplotlib
 - Regex (`re`)
 - ThreadPoolExecutor
+- RandomForest
+- Streamlit
 
 ---
 
@@ -65,7 +67,7 @@ Tratamento e limpeza dos dados
         ↓
 Criação da base final
         ↓
-Exportação para CSV e visualização gráfica
+Exportação para CSV e visualização gráfica 
 
 ```
 ```
@@ -76,5 +78,7 @@ bash
 pip install -r requirements.txt
 
 python project.py
+python tecnica.py
+streamlit run dashboard.py
 ```
 
