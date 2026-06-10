@@ -15,22 +15,26 @@ print("Iniciando coleta...\n")
 
 
 # -------------------------
-# CLEAN
+# UTILITÁRIOS
 # -------------------------
+
 def clean(text):
+    """Remove espaços extras, quebras de linha e caracteres duplicados."""
     if text:
         return text.strip().replace("\n", " ").replace("  ", " ")
     return None
 
 
 # -------------------------
-# SCRAP PÁGINA INDIVIDUAL (somente STATUS)
+# SCRAPING DA PÁGINA INDIVIDUAL
+# Captura somente o campo STATUS de cada obra
 # -------------------------
+
 def scrape_manga_page(url):
     try:
         r = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
-    except:
+    except Exception:
         return {"status": None}
 
     info = {"status": None}
@@ -50,15 +54,18 @@ def scrape_manga_page(url):
     return info
 
 
+# ThreadPoolExecutor: 10 workers em paralelo para acelerar a captura de status
 executor = ThreadPoolExecutor(max_workers=10)
 
 
 # -------------------------
-# EXTRAÇÃO (ETAPA 1 - RAW)
+# ETAPA 1 — COLETA BRUTA (ranking geral)
+# Percorre as 20 páginas do Top Manga (50 obras por página = 1.000 registros)
 # -------------------------
+
 for i in range(0, 1000, 50):
     url = base_url + str(i)
-    print("Coletando:", url)
+    print(f"Coletando: {url}")
 
     response = requests.get(url, headers=headers)
     soup = BeautifulSoup(response.text, "html.parser")
@@ -66,97 +73,118 @@ for i in range(0, 1000, 50):
     rows = soup.select("tr.ranking-list")
 
     for row in rows:
-        title = row.select_one("h3.manga_h3").text.strip()
+        title    = row.select_one("h3.manga_h3").text.strip()
         page_url = row.select_one("h3.manga_h3 a")["href"]
 
         # SCORE
         score_tag = row.select_one("td.score span")
-        score = score_tag.text.strip()
-        score = float(score) if score != "N/A" else None
+        score     = score_tag.text.strip()
+        score     = float(score) if score != "N/A" else None
 
-        # INFO BOX (RAW)
+        # INFO BOX (texto bruto com tipo, volumes e membros)
         info_box = row.select_one("div.information").text.strip()
 
-        # TYPE
+        # TYPE — primeiro token antes do parêntese
         type_match = re.search(r"^(.+?)\s\(", info_box)
-        type_ = type_match.group(1).strip() if type_match else None
+        type_      = type_match.group(1).strip() if type_match else None
 
         # MEMBERS
         mem_match = re.search(r"([\d,]+)\s*members", info_box)
-        members = int(mem_match.group(1).replace(",", "")) if mem_match else None
+        members   = int(mem_match.group(1).replace(",", "")) if mem_match else None
 
-        # VOLUMES (Tratativa: ? se nulo)
+        # VOLUMES — "?" quando não informado (tratado no ETL)
         vols_match = re.search(r"(\d+)\s*vols", info_box)
-        if vols_match:
-            volumes = int(vols_match.group(1))
-        else:
-            volumes = "?"
+        volumes    = int(vols_match.group(1)) if vols_match else "?"
 
+        # Disparar scraping da página individual de forma assíncrona
         future = executor.submit(scrape_manga_page, page_url)
 
         data.append({
-            "title": title,
-            "score": score,
+            "title":   title,
+            "score":   score,
             "members": members,
             "volumes": volumes,
-            "type": type_,
-            "_future": future
+            "type":    type_,
+            "_future": future,
         })
 
-    time.sleep(0.3)
+    time.sleep(0.3) 
 
+# -------------------------
+# ETAPA 2 — SINCRONIZAÇÃO DOS RESULTADOS DE STATUS
+# Aguarda todas as threads e incorpora o campo status
+# -------------------------
 
-print("\nSincronizando resultados (STATUS)...")
+print("\nSincronizando resultados de STATUS...")
 
 for item in data:
-    f = item.pop("_future")
+    f       = item.pop("_future")
     details = f.result()
     item.update(details)
 
+executor.shutdown(wait=False)
 
 # -------------------------
-# DATAFRAME (BRUTO)
+# DATAFRAME BRUTO
 # -------------------------
+
 df_before = pd.DataFrame(data)
 
+print(f"\nRegistros brutos coletados: {len(df_before)}")
+
 # -------------------------
-# LIMPEZA / TRANSFORMAÇÃO (ETL)
+# ETAPA 3 — LIMPEZA E TRANSFORMAÇÃO (ETL)
 # -------------------------
 
-# substituir "?" por NaN para análise
+# 3.1 Converter volumes: "?" → NaN para análise numérica
 df_before["volumes_num"] = pd.to_numeric(df_before["volumes"], errors="coerce")
 
-# remover duplicatas
+# 3.2 Remover duplicatas pelo título
 df_after = df_before.drop_duplicates(subset=["title"])
 
-# remover nulos críticos
+# 3.3 Remover registros sem score ou members (campos críticos)
 df_after = df_after.dropna(subset=["score", "members"])
 
-# remover volumes inválidos para análise
-df_after_clean = df_after.dropna(subset=["volumes_num"])
-
-
-print("\nFinalizado!")
-print("Total bruto:", len(df_before))
-print("Após limpeza:", len(df_after_clean))
-
+print(f"Registros após remoção de duplicatas e nulos críticos: {len(df_after)}")
 
 # -------------------------
 # SALVAR CSV
+# Nota: o CSV é salvo com df_after (inclui registros com volumes_num = NaN),
+# pois o dashboard exibe todos os mangás e faz o dropna internamente
+# apenas no Gráfico 5 (Histograma de Volumes).
+# O script tecnica.py faz seu próprio dropna antes de treinar o modelo.
 # -------------------------
+
 df_after.to_csv("manga_dataset.csv", index=False)
 
+print(f"\nDataset salvo como 'manga_dataset.csv' com {len(df_after)} registros.")
+print(f"  → Registros com volumes informados : {df_after['volumes_num'].notna().sum()}")
+print(f"  → Registros com volumes ausentes   : {df_after['volumes_num'].isna().sum()}")
 
 # -------------------------
-# GRÁFICO ANTES vs DEPOIS
+# ETAPA 4 — VALIDAÇÃO VISUAL (ETL)
+# Comparação da distribuição de volumes antes e depois da limpeza
+# Usado apenas para validação interna, não compõe o dashboard
 # -------------------------
 
-plt.figure()
-plt.hist(df_before["volumes_num"].dropna(), bins=30)
-plt.title("Volumes - ANTES da Limpeza")
+df_after_clean = df_after.dropna(subset=["volumes_num"])
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+axes[0].hist(df_before["volumes_num"].dropna(), bins=30, color="steelblue", edgecolor="white")
+axes[0].set_title("Volumes — ANTES da limpeza")
+axes[0].set_xlabel("Número de volumes")
+axes[0].set_ylabel("Frequência")
+
+axes[1].hist(df_after_clean["volumes_num"], bins=30, color="seagreen", edgecolor="white")
+axes[1].set_title("Volumes — DEPOIS da limpeza")
+axes[1].set_xlabel("Número de volumes")
+axes[1].set_ylabel("Frequência")
+
+plt.suptitle("Validação ETL — Distribuição de volumes antes e depois da limpeza")
+plt.tight_layout()
+plt.savefig("etl_volumes_validacao.png", dpi=150)
 plt.show()
 
-plt.figure()
-plt.hist(df_after_clean["volumes_num"], bins=30)
-plt.title("Volumes - DEPOIS da Limpeza")
-plt.show()
+print("\nGráfico de validação ETL salvo como 'etl_volumes_validacao.png'")
+print("\nColeta e ETL finalizados com sucesso.")
